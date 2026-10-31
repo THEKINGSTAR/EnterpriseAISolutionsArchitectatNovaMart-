@@ -425,7 +425,7 @@ def build_refund_agent() -> Agent:
 
         return state.get('inventory_agent') or {}
         return {
-            'found': True,
+            'found': True, 
             'session_id': session_id,
             'customer_id': state.get('customer_id'),
             'inventory_agent': _json_safe(state.get('inventory_agent', {})),
@@ -448,7 +448,7 @@ def build_refund_agent() -> Agent:
         # TODO: Instantiate and return the Agent
         table = dynamodb.Table(config.ORDERS_TABLE)
 
-        response = table.update_item(
+        response = table.get_item(
             key={'customer_id': customer_id, 'order_id': order_id},
             ConsistentRead=True,
         )
@@ -551,6 +551,12 @@ def build_refund_agent() -> Agent:
             ),
         }
 
+    AGENT = Agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=[get_inventory_context, initiate_refund]
+    )
+    return AGENT
 
 # ───────────────────────────────────────────────────────
 #  2.C - POLICY AGENT - MULTI-AGENT RAG
