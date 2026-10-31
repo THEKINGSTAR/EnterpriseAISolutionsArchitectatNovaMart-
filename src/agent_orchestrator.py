@@ -36,6 +36,8 @@ https://github.com/aws/agentcore-cli) through the pre-written helper
 src/agentcore_cli.py - see the README for the prerequisites (Node.js 20+, uv).
 """
 
+from decimal import Decimal
+
 import boto3
 import json
 import time
@@ -215,6 +217,15 @@ def _update_workflow_state(session_id: str, updates: dict,
 # ───────────────────────────────────────────────────────
 #  2.A - INVENTORY AGENT
 # ───────────────────────────────────────────────────────
+def _json_safe(value):
+    """Convert DynamoDB Decimal values and nested collections to JSON-safe data."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
 
 def build_inventory_agent() -> Agent:
     """
@@ -223,17 +234,37 @@ def build_inventory_agent() -> Agent:
     Gathers order and customer facts from DynamoDB. Does NOT make decisions -
     only retrieves data for the OrchestratorAgent to share with downstream agents.
     """
-
     # TODO: Create a BedrockModel using the WORKER model
-    pass
-
+    model = BedrockModel(
+        model_id=config.WORKER_MODEL_ID,
+        region_name=config.AWS_REGION,
+        temperature=0.1,
+        )
+    
     # TODO: System prompt for the Inventory Agent
-    pass
+    system_prompt = """You are NovaMart's Inventory Agent, a factual data-retrieval specialist.
+    Your responsibility is limited to retrieving customer and order information from
+    DynamoDB. Never decide return eligibility, approve or reject refunds, interpret policy,
+    or invent missing information.
 
-    # TODO: Implement check_order_status
+    Use the customer's ID from the request. For a specific order, call
+    check_order_status with BOTH customer_id and order_id. For an explicit return/refund
+    request, also call get_customer_tier so RefundAgent receives both the order facts and
+    the customer's tier. If the customer asks about their account/tier, call
+    get_customer_tier. For order-history questions, call list_customer_orders. If a return
+    request does not include an order ID, retrieve the customer's orders and tier.
+    Report the retrieved facts clearly, including dates, status, product, price, and tier
+    when available. State explicitly when a record or field is missing.
+    """
+
     # NOTE: the Orders table has a COMPOSITE key (customer_id = partition key,
     # order_id = sort key), so a get_item needs BOTH values. That is why this
     # tool takes customer_id as well as order_id.
+
+    orders_table = dynamodb.Table(config.ORDERS_TABLE)
+    customers_table = dynamodb.Table(config.CUSTOMERS_TABLE)
+
+    # TODO: Implement check_order_status
     @tool
     def check_order_status(customer_id: str, order_id: str) -> dict:
         """
@@ -248,7 +279,20 @@ def build_inventory_agent() -> Agent:
             Order record (order_id, status, product_name, order_date, price, ...)
             or a not-found message
         """
-        pass
+        response = orders_table.get_item(
+            Key={'customer_id': customer_id, 'order_id': order_id}
+            )
+        
+        item = response.get('Item')
+
+        if not item:
+            return {'found': False,
+                    'customer_id': customer_id,
+                    'order_id': order_id,
+                    'message': f"Order '{order_id}' for customer'{customer_id}' not found."
+                    }
+        
+        return {'found': True, 'order': _json_safe(item)}
 
     # TODO: Implement get_customer_tier
     @tool
@@ -263,7 +307,17 @@ def build_inventory_agent() -> Agent:
         Returns:
             Customer profile including tier and account details
         """
-        pass
+        response = customers_table.get_item(Key={'customer_id': customer_id})
+
+        item  = response.get('Item')
+
+        if not item:
+            return {'found': False,
+                    'customer_id': customer_id,
+                    'message': f"Customer: '{customer_id}', profile was not found."
+                    }
+        
+        return {'found': True, 'customer': _json_safe(item)}
 
     # TODO: Implement list_customer_orders
     @tool
@@ -277,10 +331,36 @@ def build_inventory_agent() -> Agent:
         Returns:
             List of all orders with order_id, status, order_date, and amount
         """
-        pass
+
+        query_args = {
+            'KeyConditionExpression': Key('customer_id').eq(customer_id)
+        }
+
+        orders = []
+
+        while True:
+            response = orders_table.query(**query_args)
+            orders.extend(response.get('Items', []))
+            last_key = response.get('LastEvaluatedKey')
+            if not last_key:
+                break
+            query_args['LastEvaluatedKey'] = last_key
+
+        safe_orders = _json_safe(orders)
+
+        return {
+            'customer_id': customer_id,
+            'orders': safe_orders,
+            'count': len(safe_orders),
+        }
 
     # TODO: Instantiate and return the Agent
-    pass
+    AGENT = Agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=[check_order_status, get_customer_tier, list_customer_orders]
+        )
+    return AGENT
 
 
 # ───────────────────────────────────────────────────────
@@ -296,10 +376,31 @@ def build_refund_agent() -> Agent:
     """
 
     # TODO: Create a BedrockModel
-    pass
+    model = BedrockModel(
+        model_id=config.WORKER_MODEL_ID,
+        region_name=config.AWS_REGION,
+        temperature=0.1,
+    )
 
     # TODO: System prompt for the Refund Agent
-    pass
+    system_prompt = """You are NovaMart's Refund Agent. You are responsible for evaluating
+    return/refund requests using the facts stored by InventoryAgent and the return-window
+    rules below. You must call get_inventory_context FIRST for every decision.
+
+    Rules:
+    - Standard customers: eligible within 30 days of order_date.
+    - Premium customers: eligible within 60 days of order_date.
+    - Use the current date supplied in the task context. Do not guess missing dates or tiers.
+    - If the order is missing, already has a return reference, or is outside the customer's
+    applicable window, do not call initiate_refund; explain the factual reason.
+    - Call initiate_refund only after you have established that the customer explicitly
+    requested a return/refund and the order is eligible. Never initiate a return for a
+    simple order-status question.
+    - Do not invent a return reference or claim a refund has been paid. The tool only
+    records a return request and returns its reference/instructions.
+    - If WorkflowState lacks the order or customer tier, request the necessary inventory
+    lookup rather than making an assumption.
+    """
 
     # TODO: Implement get_inventory_context
     @tool
@@ -313,7 +414,22 @@ def build_refund_agent() -> Agent:
         Returns:
             The inventory_agent field from WorkflowState, or empty dict if not yet set
         """
-        pass
+        state = _read_workflow_state(session_id)
+        if not state:
+            return {}
+            return {
+                'found': False,
+                'session_id': session_id,
+                'message': f"WorkflowState for session {session_id} does not exist for this session."
+            } # NOT IMPLEMENTED: BASED ON DOCSTRING INSTRUCTION
+
+        return state.get('inventory_agent') or {}
+        return {
+            'found': True,
+            'session_id': session_id,
+            'customer_id': state.get('customer_id'),
+            'inventory_agent': _json_safe(state.get('inventory_agent', {})),
+        } # NOT IMPLEMENTED: BASED ON DOCSTRING INSTRUCTION
 
     # TODO: Implement initiate_refund
     @tool
@@ -329,10 +445,111 @@ def build_refund_agent() -> Agent:
         Returns:
             Confirmation dict with return_reference number and instructions
         """
-        pass
+        # TODO: Instantiate and return the Agent
+        table = dynamodb.Table(config.ORDERS_TABLE)
 
-    # TODO: Instantiate and return the Agent
-    pass
+        response = table.update_item(
+            key={'customer_id': customer_id, 'order_id': order_id},
+            ConsistentRead=True,
+        )
+
+        current = response.get('Item')
+
+        if not current:
+            return {
+                'success': False,
+                'customer_id': customer_id,
+                'order_id': order_id,
+                
+                'message': f"Order '{order_id}' for customer '{customer_id}' not found. \
+                    No return request was created.",
+            }
+        
+        exsisting_return_ref = current.get('return_reference')
+
+        if exsisting_return_ref:
+            return {
+                'success': True,
+                'customer_id': customer_id,
+                'order_id': order_id,
+                'return_reference': exsisting_return_ref,
+                
+                'instructions': f"Order '{order_id}' \
+                    for customer '{customer_id}' already has a return reference '{exsisting_return_ref}'.\
+                    No new return request was created.",
+                }
+        
+        return_reference = f"RET-{uuid.uuid4().hex[:8].upper()}"
+
+        try: table.update_item(
+            key={'customer_id': customer_id,
+                 'order_id': order_id
+                },
+            UpdateExpression=(
+                "SET return_reference = :return_reference,"
+                "return_reason = :return_reason"
+            ),
+            ConditionExpression=(
+                "attribute_exists(customer_id) AND "
+                "attribute_exists(order_id) AND "
+                "attribute_not_exists(return_reference)"
+                ),
+            ExpressionAttributeValues={
+                ':return_reference': return_reference,
+                ':return_reason': reason.strip()
+            }
+        )
+            
+        except ClientError as ClintErr:
+            error_code = ClintErr.response.get('Error',{}.get('Code'))
+            if error_code == 'ConditionalCheckFailedException':
+                raise
+            
+            latest = table.get_item(
+                Key={'customer_id': customer_id,
+                     'order_id': order_id
+                    },
+                ConsistentRead=True
+                ).get('Item')
+
+            if latest and latest.get('return_reference'):
+                exsisting_refrence = latest['return_reference']
+                return {
+                    'success': True,
+                    'customer_id': customer_id,
+                    'order_id': order_id,
+                    'return_reference': exsisting_refrence,
+                    
+                    'instructions': f"Order '{order_id}' for customer '{customer_id}' \
+                        already has a return reference '{exsisting_refrence}'.\
+                        No new return request was created.",
+                }
+            return {
+                'success': False,
+                'customer_id': customer_id,
+                'order_id': order_id,
+                
+                'message': (
+                f"Error occurred while updating order: {str(ClintErr)}. \
+                Could not register a return request for order {order_id}. \
+                No return request was created.\
+                The order may have changed or been removed. Please retry."
+                ),
+            }
+    
+        return {
+            'success': True,
+            'customer_id': customer_id,
+            'order_id': order_id,
+            'return_reference': exsisting_refrence,
+            'instructions': (
+                f"Your return request for order {order_id} has been registered. "
+                f"Your reference number is {return_reference}. "
+                "Keep this reference for future communication with NovaMart. "
+                "This confirms registration of the return request, "
+                "not completion of a payment refund."
+            ),
+        }
 
 
 # ───────────────────────────────────────────────────────
@@ -355,7 +572,9 @@ def build_policy_agent() -> Agent:
         pass
 
     # Create the ReturnsPolicyRetrieverAgent with the tool above
-    pass
+    returns_retriever = Agent(model=model,
+                              system_prompt=system_prompt,
+                              tools=[retrieve_returns_policy])
 
     # TODO: Build ShippingPolicyRetrieverAgent
     @tool
@@ -364,7 +583,9 @@ def build_policy_agent() -> Agent:
         pass
 
     # Create the ShippingPolicyRetrieverAgent with the tool above
-    pass
+    shipping_retriever = Agent(model=model,
+                               system_prompt=system_prompt,
+                               tools=[retrieve_shipping_policy])
 
     # TODO: Build WarrantyPolicyRetrieverAgent
     @tool
@@ -862,6 +1083,11 @@ def configure_observability(runtime_arn: str) -> None:
     # and the X-Ray sampling rate; on exception print
     #   "[Note] Observability configuration failed: <e>"
 
+    logging_configuration = {'cloudWatchConfig': 
+                             {'logGroupName': config.AGENT_LOG_GROUP,
+                              'logLevel': 'INFO', 'enabled': True},
+                              'xRayConfig':{'enabled': True, 'samplingRate': 1.0},
+                            }
     pass
 
 
