@@ -36,6 +36,7 @@ https://github.com/aws/agentcore-cli) through the pre-written helper
 src/agentcore_cli.py - see the README for the prerequisites (Node.js 20+, uv).
 """
 
+from datetime import datetime
 from decimal import Decimal
 
 import boto3
@@ -109,6 +110,7 @@ from agent_observability import (
 # AWS CLIENTS
 # ─────────────────────────────────────────────────────
 env_region_name = config.AWS_REGION
+env_model_id = config.WORKER_MODEL_ID
 
 bedrock_agent_client = boto3.client("bedrock-agent", region_name=env_region_name)
 bedrock_runtime = boto3.client("bedrock-runtime", region_name=env_region_name)
@@ -249,7 +251,7 @@ def build_inventory_agent() -> Agent:
     """
     # TODO: Create a BedrockModel using the WORKER model
     model = BedrockModel(
-        model_id=config.WORKER_MODEL_ID,
+        model_id=env_model_id,
         region_name=env_region_name,
         temperature=0.1,
     )
@@ -391,7 +393,7 @@ def build_refund_agent() -> Agent:
 
     # TODO: Create a BedrockModel
     model = BedrockModel(
-        model_id=config.WORKER_MODEL_ID,
+        model_id=env_model_id,
         region_name=env_region_name,
         temperature=0.1,
     )
@@ -579,7 +581,7 @@ def build_policy_agent() -> Agent:
     """
 
     model = BedrockModel(
-        model_id=config.WORKER_MODEL_ID,
+        model_id=env_model_id,
         region_name=env_region_name,
         temperature=0.0,
     )
@@ -719,22 +721,59 @@ def build_policy_agent() -> Agent:
             Results are returned as values and printed cleanly and
             sequentially by trace.kb_result() after all futures join.
             """
-            pass
+            try:
+                result = agent(query)
+                return domain, str(result)
+            except Exception as rtriv_excep:
+                print(f"Error occurred while running {domain} retriever: {rtriv_excep}")
+                logger.exception("%s policy retriever failed", domain)
+                return (
+                    domain,
+                    f"{domain} retrieval failed: {type(rtriv_excep).__name__}: {rtriv_excep}",
+                )
 
         # Use ThreadPoolExecutor to run all three retrievers in parallel
         # Collect results into a dict: {'Returns': '...', 'Shipping': '...', ...}
+        try:
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                future_to_domain = {
+                    executor.submit(_run_retriever, domain, agent, query): domain
+                    for domain, agent in retrievers.items()
+                }
+
+                results = {}
+                for future in as_completed(future_to_domain):
+                    domain = future_to_domain[future]
+                    try:
+                        _, result_text = future.result()
+                        results[domain] = result_text
+                    except Exception as exc:
+                        print(f"{domain} retriever generated an exception: {exc}")
+                        logger.exception("%s policy future failed", domain)
+                        results[domain] = (
+                            f"{domain} retrieval failed: {type(exc).__name__}: {exc}"
+                        )
+        finally:
+            # Ensure the trace is marked as done even if an exception occurs
+            trace.kb_done(len(retrievers))
 
         # ── Trace: all KBs responded - print each result sequentially ─────
         # trace.kb_done(len(retrievers))
         # for domain in ['Returns', 'Shipping', 'Warranty']:
         #     trace.kb_result(domain, results.get(domain, '[No results]'))
-
+        for domain in ["Returns", "Shipping", "Warranty"]:
+            trace.kb_result(domain, results.get(domain, "[No results]"))
         # Combine results from all three domains and return
-        pass
+        combined_results = "\n\n".join(
+            f'{domain} \
+                                       Policy:\n{results.get(domain, "[No results]")}'
+            for domain in ["Returns", "Shipping", "Warranty"]
+        )
+        return combined_results
 
     # TODO: Create a BedrockModel for the PolicyAgent coordinator
     PolicyAgent = BedrockModel(
-        model_id=config.WORKER_MODEL_ID,
+        model_id=env_model_id,
         region_name=env_region_name,
         temperature=0.2,
     )
@@ -755,7 +794,6 @@ def build_policy_agent() -> Agent:
         model=PolicyAgent,
         system_prompt=coordinator_prompt,
         tools=[search_all_policies],
-        temperature=0.2,
     )
     return PolicyAgent_coordinator
 
@@ -775,8 +813,8 @@ def build_communication_agent() -> Agent:
 
     # TODO: Create a BedrockModel
     model = BedrockModel(
-        model_id=config.WORKER_MODEL_ID,
-        region_name=config.AWS_REGION,
+        model_id=env_model_id,
+        region_name=env_region_name,
         temperature=0.3,
     )
 
@@ -808,6 +846,8 @@ def build_communication_agent() -> Agent:
             Full WorkflowState dict (inventory_agent, policy_agent, refund_agent)
         """
         state = _read_workflow_state(session_id)
+
+        """
         if not state:
             return {
                 "found": False,
@@ -815,13 +855,18 @@ def build_communication_agent() -> Agent:
                 "message": "No WorkflowState record exists for this session.",
             }
         return {"found": True, "workflow_state": _json_safe(state)}
+        """  # NOT IMPLEMENTED: BASED ON DOCSTRING INSTRUCTION
 
-        # TODO: Instantiate and return the Agent
-        return Agent(
-            model=model,
-            tools=[get_full_workflow_context],
-            system_prompt=system_prompt,
-        )
+        if not state:
+            return {}
+        return _json_safe(state)
+
+    # TODO: Instantiate and return the Agent
+    return Agent(
+        model=model,
+        tools=[get_full_workflow_context],
+        system_prompt=system_prompt,
+    )
 
 
 # ───────────────────────────────────────────────────────
@@ -840,12 +885,41 @@ def build_orchestrator_agent(
     """
 
     # TODO: Create a BedrockModel using the ORCHESTRATOR model
-    pass
+    model = BedrockModel(
+        model_id=config.ORCHESTRATOR_MODEL_ID,
+        region_name=config.AWS_REGION,
+        temperature=0.0,
+    )
 
     # TODO: System prompt for the Orchestrator
     # For arithmetic, skip Inventory, Policy and Refund, but still call
     # CommunicationAgent last. Round currency only after the full calculation.
-    pass
+    system_prompt = """You are NovaMart-Orchestrator. You are a routing controller, NOT a
+    customer-facing answer agent. Never answer the customer directly and never invent
+    facts. Delegate every request to specialist agents according to these mandatory rules.
+
+    SESSION METADATA: Each user message begins with [Session ID: ...] [Customer ID: ...].
+    Use those exact values for tool arguments. Do not create a new session ID yourself.
+
+    MANDATORY ORDER OF OPERATIONS:
+    1. For every request, call initialize_session FIRST, before any other tool.
+    2. Order status or order-history questions: call route_to_inventory_agent.
+    3. Return/refund requests: call route_to_inventory_agent FIRST, then
+    route_to_refund_agent. Never call RefundAgent before InventoryAgent.
+    4. Questions about the meaning or terms of returns, shipping, or warranty policies:
+    call route_to_policy_agent. A question asking only for a customer's account tier or
+    account details is NOT a policy question.
+    5. Account/tier questions (for example, 'what is my tier?' or 'am I premium?'):
+    call route_to_inventory_agent; never call route_to_policy_agent for customer data.
+    6. Pure arithmetic or calculation questions: skip InventoryAgent, PolicyAgent, and
+    RefundAgent. Route directly to CommunicationAgent after initialize_session.
+    7. For every request, call route_to_communication_agent as the FINAL tool call,
+    after all relevant specialists have completed. No tools may be called afterward.
+
+    Use only the applicable routes; do not call every worker indiscriminately. Pass the
+    original customer request unchanged into each route. Include the session ID and
+    customer ID exactly as given. CommunicationAgent alone composes the final response.
+    """
 
     # Each routing tool follows the same pattern:
     #   1. read the current WorkflowState  (_read_workflow_state)
@@ -872,7 +946,36 @@ def build_orchestrator_agent(
         Returns:
             Inventory facts retrieved by the InventoryAgent
         """
-        pass
+        
+        state = _read_workflow_state(session_id)
+        
+        if not state:
+            return f"WorkflowState for session {session_id} does not exist."
+        
+        if state.get('customer_id') != customer_id:
+            return f"Customer ID mismatch: expected {state.get('customer_id')}, got {customer_id}."
+        
+        old_version = int(state.get("version", 0))
+        trace.step_start("inventory_agent")
+        
+        worker_prompt = f"Session ID: {session_id}\n\
+            Customer ID: {customer_id}\n\
+            Request: {request}\n\
+            Please retrieve the relevant order and customer information from DynamoDB. \
+            Do not make any decisions or interpretations; only return factual data."
+        
+        worker_result = inventory_agent(worker_prompt)
+        result_text = str(worker_result)
+        
+        _update_workflow_state(
+            session_id, {"inventory_agent": result_text}, 
+            expected_version=old_version
+        )
+        
+        trace.step_done("inventory_agent", old_version)
+        
+        return result_text
+        
 
     # TODO: Implement route_to_policy_agent
     @tool
@@ -888,7 +991,25 @@ def build_orchestrator_agent(
         Returns:
             Policy information retrieved and synthesized by PolicyAgent
         """
-        pass
+        state = _read_workflow_state(session_id)
+        if not state:
+            return f"WorkflowState for session {session_id} does not exist."
+        old_version = int(state.get("version", 0))
+        trace.step_start("policy_agent")
+        
+        worker_prompt = f"Session ID: {session_id}\n\
+            Request: {request}\n\
+            Please retrieve and synthesize relevant policy information from the knowledge bases. \
+            Do not invent any policy details."
+        
+        worker_result = policy_agent(worker_prompt)
+        result_text = str(worker_result)
+        _update_workflow_state(
+            session_id, {"policy_agent": result_text},
+            expected_version=old_version,
+        )
+        trace.step_done("policy_agent", old_version)
+        return result_text
 
     # TODO: Implement route_to_refund_agent
     @tool
@@ -905,8 +1026,36 @@ def build_orchestrator_agent(
         Returns:
             Refund decision from the RefundAgent
         """
-        pass
+        state = _read_workflow_state(session_id)
+        if not state:
+            return (f"WorkflowState for session {session_id} does not exist.")
+        if state.get('customer_id') != customer_id:
+            return (f"Customer ID mismatch: expected {state.get('customer_id')}, \
+                    got {customer_id}.")
+        if not state.get("inventory_agent"):
+            return (f"InventoryAgent results not found in WorkflowState for session {session_id}. \
+                Please call route_to_inventory_agent first.")
 
+        old_version = int(state.get("version", 0))
+        trace.step_start("refund_agent")
+        current_date = time.strftime("%Y-%m-%d", time.gmtime())
+        worker_prompt = f"Session ID: {session_id}\n\
+            Customer ID: {customer_id}\n\
+            Request: {request}\n\
+            Current UTC date: {current_date}\n\
+            Original return/refund request: {request}\n\
+            First read the inventory context. Apply the tier-specific 30/60-day \
+            window and order status before deciding. Record a return only when eligible."
+        
+        worker_result = refund_agent(worker_prompt)
+        result_text = str(worker_result)
+        _update_workflow_state(
+            session_id, {"refund_agent": result_text},
+            expected_version=old_version,
+        )
+        trace.step_done("refund_agent", old_version)
+        return result_text
+    
     # TODO: Implement route_to_communication_agent
     @tool
     def route_to_communication_agent(
@@ -924,7 +1073,26 @@ def build_orchestrator_agent(
         Returns:
             Final customer-facing response drafted by CommunicationAgent
         """
-        pass
+        state = _read_workflow_state(session_id)
+        if not state:
+            return (f"WorkflowState for session {session_id} does not exist.")
+        if state.get('customer_id') != customer_id:
+            return (f"Customer ID mismatch: expected {state.get('customer_id')}, got {customer_id}.")
+        old_version = int(state.get('version', 0))
+        trace.step_start('communication_agent')
+        worker_prompt = (
+            f'Session ID: {session_id}\nCustomer ID: {customer_id}\n'
+            f'Original customer request: {original_request}\n'
+            'Read the full WorkflowState and compose the final customer-facing response. '
+            'This is the final operation for this request.'
+        )
+        worker_result = communication_agent(worker_prompt)
+        result_text = str(worker_result)
+        _update_workflow_state(
+            session_id, {'communication_agent': result_text}, expected_version=old_version
+        )
+        trace.step_done('communication_agent', old_version)
+        return result_text
 
     # TODO: Implement initialize_session
     @tool
@@ -940,10 +1108,41 @@ def build_orchestrator_agent(
         Returns:
             Confirmation that the session was initialized
         """
-        pass
+        existing = _read_workflow_state(session_id)
+        if existing:
+            if existing.get('customer_id') != customer_id:
+                raise ValueError('This session ID is already associated with another customer.')
+            return (
+                f'WorkflowState already initialized for session {session_id}; '
+                f'current version is {existing.get("version", 0)}.'
+            )
+        try:
+            created = _create_workflow_state(session_id, customer_id)
+        except ClientError as exc:
+            code = exc.response.get('Error', {}).get('Code')
+            if code != 'ConditionalCheckFailedException':
+                raise
+            # Another invocation created the same session between the read and write.
+            created = _read_workflow_state(session_id)
+            if not created:
+                raise RuntimeError('WorkflowState creation conflicted but no record was found.') from exc
+            if created.get('customer_id') != customer_id:
+                raise ValueError('This session ID is already associated with another customer.')
+        return f'WorkflowState initialized for session {session_id} at version {created.get("version", 0)}.'
 
     # TODO: Instantiate and return the OrchestratorAgent
-    pass
+    OrchestratorAgent = Agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=[
+            initialize_session,
+            route_to_inventory_agent,
+            route_to_policy_agent,
+            route_to_refund_agent,
+            route_to_communication_agent,
+        ],
+    )
+    return OrchestratorAgent
 
 
 # ═══════════════════════════════════════════════════════
