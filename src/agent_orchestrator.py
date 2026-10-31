@@ -449,7 +449,7 @@ def build_refund_agent() -> Agent:
         table = dynamodb.Table(config.ORDERS_TABLE)
 
         response = table.get_item(
-            key={'customer_id': customer_id, 'order_id': order_id},
+            Key={'customer_id': customer_id, 'order_id': order_id},
             ConsistentRead=True,
         )
 
@@ -479,30 +479,31 @@ def build_refund_agent() -> Agent:
                     No new return request was created.",
                 }
         
-        return_reference = f"RET-{uuid.uuid4().hex[:8].upper()}"
+        return_reference = f"RET-{uuid.uuid4().hex.upper()}"
 
-        try: table.update_item(
-            key={'customer_id': customer_id,
-                 'order_id': order_id
+        try: 
+            table.update_item(
+                Key={'customer_id': customer_id,
+                'order_id': order_id
                 },
-            UpdateExpression=(
-                "SET return_reference = :return_reference,"
-                "return_reason = :return_reason"
-            ),
-            ConditionExpression=(
-                "attribute_exists(customer_id) AND "
-                "attribute_exists(order_id) AND "
-                "attribute_not_exists(return_reference)"
+                UpdateExpression=(
+                    "SET return_reference = :return_reference,"
+                    "return_reason = :return_reason"
                 ),
-            ExpressionAttributeValues={
-                ':return_reference': return_reference,
-                ':return_reason': reason.strip()
-            }
-        )
+                ConditionExpression=(
+                    "attribute_exists(customer_id) AND "
+                    "attribute_exists(order_id) AND "
+                    "attribute_not_exists(return_reference)"
+                    ),
+                ExpressionAttributeValues={
+                    ':return_reference': return_reference,
+                    ':return_reason': reason.strip()
+                    }
+            )
             
         except ClientError as ClintErr:
-            error_code = ClintErr.response.get('Error',{}.get('Code'))
-            if error_code == 'ConditionalCheckFailedException':
+            error_code = ClintErr.response.get('Error',{}).get('Code')
+            if error_code != 'ConditionalCheckFailedException':
                 raise
             
             latest = table.get_item(
@@ -541,7 +542,7 @@ def build_refund_agent() -> Agent:
             'success': True,
             'customer_id': customer_id,
             'order_id': order_id,
-            'return_reference': exsisting_refrence,
+            'return_reference': return_reference,
             'instructions': (
                 f"Your return request for order {order_id} has been registered. "
                 f"Your reference number is {return_reference}. "
@@ -571,36 +572,70 @@ def build_policy_agent() -> Agent:
     the combined results into a complete, grounded policy answer.
     """
 
+    model = BedrockModel(
+        model_id=config.WORKER_MODEL_ID,
+        region_name=config.AWS_REGION,
+        temperature=0.0,
+    )
+
+    system_prompt_for_returns_retriever = ('You are the Returns Policy Retriever. \
+                                           Call retrieve_returns_policy with the supplied customer question \
+                                           and return the retrieved passages faithfully. \
+                                           Do not answer from general knowledge or invent policy.')
+    
+    system_prompt_for_shipping_retriever = ('You are the Shipping Policy Retriever. \
+                                            Call retrieve_shipping_policy with the supplied customer \
+                                            question and return the retrieved passages faithfully. \
+                                            Do not answer from general knowledge or invent policy.')
+    
+    system_prompt_for_warranty_retriever = ('You are the Warranty Policy Retriever. \
+                                            Call retrieve_warranty_policy with the supplied customer question \
+                                            and return the retrieved passages faithfully. \
+                                            Do not answer from general knowledge or invent policy.')
+
     # TODO: Build ReturnsPolicyRetrieverAgent
     @tool
     def retrieve_returns_policy(query: str) -> str:
         """Retrieve relevant passages from the Returns Policy knowledge base."""
-        pass
+        if not config.SHIPPING_KB_ID:
+            return "SHIPPING_KB_ID is not set in config.py. Cannot retrieve shipping policy."
+        passages = retrieve_from_knowledge_base(
+            query=query,
+            kb_id=config.SHIPPING_KB_ID,
+            region_name=config.AWS_REGION,
+            max_results=5
+        )
+        return passages
+
 
     # Create the ReturnsPolicyRetrieverAgent with the tool above
     returns_retriever = Agent(model=model,
-                              system_prompt=system_prompt,
-                              tools=[retrieve_returns_policy])
+                              tools=[retrieve_returns_policy],
+                              system_prompt=system_prompt_for_returns_retriever,
+                            )
 
     # TODO: Build ShippingPolicyRetrieverAgent
     @tool
     def retrieve_shipping_policy(query: str) -> str:
         """Retrieve relevant passages from the Shipping Policy knowledge base."""
-        pass
 
     # Create the ShippingPolicyRetrieverAgent with the tool above
     shipping_retriever = Agent(model=model,
-                               system_prompt=system_prompt,
+                               system_prompt=system_prompt_for_shipping_retriever,
                                tools=[retrieve_shipping_policy])
 
     # TODO: Build WarrantyPolicyRetrieverAgent
     @tool
     def retrieve_warranty_policy(query: str) -> str:
         """Retrieve relevant passages from the Warranty Policy knowledge base."""
-        pass
+        if not config.WARRANTY_KB_ID:
+            return "WARRANTY_KB_ID is not set in config.py. Cannot retrieve warranty policy."
+        
 
     # Create the WarrantyPolicyRetrieverAgent with the tool above
-    pass
+    warranty_retriever = Agent(model=model,
+                               system_prompt=system_prompt_for_warranty_retriever,
+                               tools=[retrieve_warranty_policy])
 
     # TODO: Implement search_all_policies - parallel RAG retrieval tool
     @tool
@@ -619,6 +654,11 @@ def build_policy_agent() -> Agent:
         """
         # Build a dict mapping domain names to their retriever agents
         # e.g. {'Returns': returns_retriever, 'Shipping': shipping_retriever, ...}
+        retrievers = {
+            'Returns': returns_retriever,
+            'Shipping': shipping_retriever,
+            'Warranty': warranty_retriever,
+        }
 
         # ── Trace: show parallel KB dispatch to learners ──────────────────
         trace.kb_start({
