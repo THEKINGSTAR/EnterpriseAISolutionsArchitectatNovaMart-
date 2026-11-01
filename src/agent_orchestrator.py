@@ -612,8 +612,7 @@ def build_policy_agent() -> Agent:
         passages = retrieve_from_knowledge_base(
             query=query,
             kb_id=config.RETURNS_KB_ID,
-            region_name=env_region_name,
-            max_results=5,
+            top_k=5,
         )
         return (
             format_kb_results(passages)
@@ -636,8 +635,7 @@ def build_policy_agent() -> Agent:
         passages = retrieve_from_knowledge_base(
             query=query,
             kb_id=config.SHIPPING_KB_ID,
-            region_name=env_region_name,
-            max_results=5,
+            top_k=5,
         )
         return (
             format_kb_results(passages)
@@ -660,8 +658,7 @@ def build_policy_agent() -> Agent:
         passages = retrieve_from_knowledge_base(
             query=query,
             kb_id=config.WARRANTY_KB_ID,
-            region_name=env_region_name,
-            max_results=5,
+            top_k=5,
         )
         return (
             format_kb_results(passages)
