@@ -1626,32 +1626,26 @@ def configure_memory(runtime_arn: str) -> str:
     #         'namespaces': ['/summaries/{actorId}/{sessionId}']}}]
     #   - clientToken (e.g. str(uuid.uuid4())) for idempotency
     # Store the API response in `response`.
-    response = None
-
-    if memory is None:
-        response = agentcore_control.create_memory(
-            clientToken=str(uuid.uuid4()),
-            name=memory_name,
-            description=(
-                "NovaMart customer-support conversational memory using session summaries "
-                "for multi-turn context."
-            ),
-            eventExpiryDuration=7,
-            memoryStrategies=[
-                {
-                    "summaryMemoryStrategy": {
-                        "name": "SessionSummary",
-                        "description": "Summarize important context from each customer session.",
-                        "namespaces": ["/summaries/{actorId}/{sessionId}"],
-                    }
+    response = agentcore_control.create_memory(
+        clientToken=str(uuid.uuid4()),
+        name=memory_name,
+        description=(
+            "NovaMart customer-support conversational memory using "
+            "session summaries for multi-turn context."
+        ),
+        eventExpiryDuration=7,
+        memoryStrategies=[
+            {
+                "summaryMemoryStrategy": {
+                    "name": "SessionSummary",
+                    "description": (
+                        "Summarize important context from each customer session."
+                    ),
+                    "namespaces": ["/summaries/{actorId}/{sessionId}"],
                 }
-            ],
-        )
-        memory = response["memory"]
-        print(f"  Memory created: {memory['arn']}  (status: {memory['status']})")
-
-    if response is None:
-        raise NotImplementedError("configure_memory: create_memory() not implemented")
+            }
+        ],
+    )
 
     # Wait until the memory resource is ACTIVE and return its ARN.
     memory = response["memory"]
