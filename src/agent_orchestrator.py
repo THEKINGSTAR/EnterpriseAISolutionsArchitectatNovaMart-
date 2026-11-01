@@ -433,19 +433,9 @@ def build_refund_agent() -> Agent:
         state = _read_workflow_state(session_id)
         if not state:
             return {}
-            return {
-                "found": False,
-                "session_id": session_id,
-                "message": f"WorkflowState for session {session_id} does not exist for this session.",
-            }  # NOT IMPLEMENTED: BASED ON DOCSTRING INSTRUCTION
 
         return state.get("inventory_agent") or {}
-        return {
-            "found": True,
-            "session_id": session_id,
-            "customer_id": state.get("customer_id"),
-            "inventory_agent": _json_safe(state.get("inventory_agent", {})),
-        }  # NOT IMPLEMENTED: BASED ON DOCSTRING INSTRUCTION
+
 
     # TODO: Implement initiate_refund
     @tool
@@ -1387,25 +1377,7 @@ def create_guardrail() -> tuple[str, str]:
     }
 
     # TODO: Create the guardrail
-    # Use bedrock_client.create_guardrail() with:
-    #   - name (config.GUARDRAIL_NAME) and description
-    #   - contentPolicyConfig - filtersConfig for SEXUAL, VIOLENCE, HATE at HIGH
-    #     strength and INSULTS, MISCONDUCT at MEDIUM strength (input + output)
-    #   - sensitiveInformationPolicyConfig - piiEntitiesConfig:
-    #       CREDIT_DEBIT_CARD_NUMBER and US_SOCIAL_SECURITY_NUMBER -> BLOCK
-    #       EMAIL and PHONE -> ANONYMIZE
-    #   - topicPolicyConfig - one DENY topic per entry in config.GUARDRAIL_BLOCKED_TOPICS
-    #     (competitor products, pricing negotiations, legal threats)
-    #     Use topicPolicyConfig.tierConfig = {'tierName': 'STANDARD'} and
-    #     top-level crossRegionConfig = {'guardrailProfileIdentifier': 'us.guardrail.v1:0'}.
-    #     Define pricing negotiations as haggling / changing an advertised price,
-    #     excluding arithmetic using an already-specified price and discount.
-    #     Classic-tier definitions tested in this project blocked the math scenario.
-    #     Validate allowed arithmetic (input and output) and blocked negotiation,
-    #     competitor and legal-threat requests. Keep all required safety policies.
-    #   - wordPolicyConfig - managedWordListsConfig with type PROFANITY
-    #   - blockedInputMessaging and blockedOutputsMessaging
-    #
+    # Use bedrock_client.create_guardrail()
     # Then promote it from DRAFT to a numbered version with
     # bedrock_client.create_guardrail_version(guardrailIdentifier=...)
     # and return (guardrail_id, guardrail_version).
@@ -1544,18 +1516,9 @@ def deploy_to_agentcore_runtime(
 
     # TODO: Configure and deploy the runtime with the AgentCore CLI
     # 1. Build the runtime environment variables dict `runtime_env` with:
-    #      AWS_REGION, PROJECT_NAME (config.AWS_REGION / config.PROJECT_NAME),
-    #      RETURNS_KB_ID, SHIPPING_KB_ID, WARRANTY_KB_ID (from config),
-    #      AGENT_LOG_GROUP (config.AGENT_LOG_GROUP), and the guardrail
-    #      (GUARDRAIL_ID = guardrail_id, GUARDRAIL_VERSION = guardrail_version)
     # 2. Write the runtime settings to agentcore/agentcore.json with
-    #      agentcore_cli.configure_runtime(env_vars=runtime_env,
-    #                                      network_mode='PUBLIC',
-    #                                      protocol='HTTP',
-    #                                      execution_role_arn=config.AGENTCORE_ROLE_ARN)
-    # 3. Deploy:  agentcore_cli.deploy()        (runs `agentcore deploy -y`)
+    # 3. Deploy:  agentcore_cli.deploy()
     # 4. Read the ARN the CLI recorded:
-    #      runtime_arn = agentcore_cli.deployed_runtime_arn()
 
     runtime_env = {
         "AWS_REGION": config.AWS_REGION,
@@ -1615,13 +1578,7 @@ def configure_memory(runtime_arn: str) -> str:
             return memory_arn
 
     # TODO: Create AgentCore Memory
-    # Use agentcore_control.create_memory() with:
-    #   - name (memory_name) and a description
-    #   - eventExpiryDuration = 7   (days)
-    #   - memoryStrategies = [{'summaryMemoryStrategy': {
-    #         'name': 'SessionSummary',
-    #         'namespaces': ['/summaries/{actorId}/{sessionId}']}}]
-    #   - clientToken (e.g. str(uuid.uuid4())) for idempotency
+    # Use agentcore_control.create_memory()
     # Store the API response in `response`.
     response = agentcore_control.create_memory(
         clientToken=str(uuid.uuid4()),
@@ -1679,16 +1636,6 @@ def configure_observability(runtime_arn: str) -> None:
                           AGENT_TRACE_SAMPLING_RATE
     """
     # TODO: Build the logging configuration
-    # logging_configuration = {
-    #     'cloudWatchConfig': {'logGroupName': config.AGENT_LOG_GROUP,
-    #                          'logLevel': 'INFO', 'enabled': True},
-    #     'xRayConfig':       {'enabled': True, 'samplingRate': 1.0},
-    # }
-    # Then apply it:  summary = apply_observability_config(runtime_arn, logging_configuration)
-    # Wrap the call in try/except - on success print the CloudWatch log group
-    # and the X-Ray sampling rate; on exception print
-    #   "[Note] Observability configuration failed: <e>"
-
     logging_configuration = {
         "cloudWatchConfig": {
             "logGroupName": config.AGENT_LOG_GROUP,
