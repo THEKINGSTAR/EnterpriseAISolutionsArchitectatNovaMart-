@@ -946,36 +946,34 @@ def build_orchestrator_agent(
         Returns:
             Inventory facts retrieved by the InventoryAgent
         """
-        
+
         state = _read_workflow_state(session_id)
-        
+
         if not state:
             return f"WorkflowState for session {session_id} does not exist."
-        
-        if state.get('customer_id') != customer_id:
+
+        if state.get("customer_id") != customer_id:
             return f"Customer ID mismatch: expected {state.get('customer_id')}, got {customer_id}."
-        
+
         old_version = int(state.get("version", 0))
         trace.step_start("inventory_agent")
-        
+
         worker_prompt = f"Session ID: {session_id}\n\
             Customer ID: {customer_id}\n\
             Request: {request}\n\
             Please retrieve the relevant order and customer information from DynamoDB. \
             Do not make any decisions or interpretations; only return factual data."
-        
+
         worker_result = inventory_agent(worker_prompt)
         result_text = str(worker_result)
-        
+
         _update_workflow_state(
-            session_id, {"inventory_agent": result_text}, 
-            expected_version=old_version
+            session_id, {"inventory_agent": result_text}, expected_version=old_version
         )
-        
+
         trace.step_done("inventory_agent", old_version)
-        
+
         return result_text
-        
 
     # TODO: Implement route_to_policy_agent
     @tool
@@ -996,16 +994,17 @@ def build_orchestrator_agent(
             return f"WorkflowState for session {session_id} does not exist."
         old_version = int(state.get("version", 0))
         trace.step_start("policy_agent")
-        
+
         worker_prompt = f"Session ID: {session_id}\n\
             Request: {request}\n\
             Please retrieve and synthesize relevant policy information from the knowledge bases. \
             Do not invent any policy details."
-        
+
         worker_result = policy_agent(worker_prompt)
         result_text = str(worker_result)
         _update_workflow_state(
-            session_id, {"policy_agent": result_text},
+            session_id,
+            {"policy_agent": result_text},
             expected_version=old_version,
         )
         trace.step_done("policy_agent", old_version)
@@ -1028,13 +1027,13 @@ def build_orchestrator_agent(
         """
         state = _read_workflow_state(session_id)
         if not state:
-            return (f"WorkflowState for session {session_id} does not exist.")
-        if state.get('customer_id') != customer_id:
-            return (f"Customer ID mismatch: expected {state.get('customer_id')}, \
-                    got {customer_id}.")
+            return f"WorkflowState for session {session_id} does not exist."
+        if state.get("customer_id") != customer_id:
+            return f"Customer ID mismatch: expected {state.get('customer_id')}, \
+                    got {customer_id}."
         if not state.get("inventory_agent"):
-            return (f"InventoryAgent results not found in WorkflowState for session {session_id}. \
-                Please call route_to_inventory_agent first.")
+            return f"InventoryAgent results not found in WorkflowState for session {session_id}. \
+                Please call route_to_inventory_agent first."
 
         old_version = int(state.get("version", 0))
         trace.step_start("refund_agent")
@@ -1046,16 +1045,17 @@ def build_orchestrator_agent(
             Original return/refund request: {request}\n\
             First read the inventory context. Apply the tier-specific 30/60-day \
             window and order status before deciding. Record a return only when eligible."
-        
+
         worker_result = refund_agent(worker_prompt)
         result_text = str(worker_result)
         _update_workflow_state(
-            session_id, {"refund_agent": result_text},
+            session_id,
+            {"refund_agent": result_text},
             expected_version=old_version,
         )
         trace.step_done("refund_agent", old_version)
         return result_text
-    
+
     # TODO: Implement route_to_communication_agent
     @tool
     def route_to_communication_agent(
@@ -1075,23 +1075,25 @@ def build_orchestrator_agent(
         """
         state = _read_workflow_state(session_id)
         if not state:
-            return (f"WorkflowState for session {session_id} does not exist.")
-        if state.get('customer_id') != customer_id:
-            return (f"Customer ID mismatch: expected {state.get('customer_id')}, got {customer_id}.")
-        old_version = int(state.get('version', 0))
-        trace.step_start('communication_agent')
+            return f"WorkflowState for session {session_id} does not exist."
+        if state.get("customer_id") != customer_id:
+            return f"Customer ID mismatch: expected {state.get('customer_id')}, got {customer_id}."
+        old_version = int(state.get("version", 0))
+        trace.step_start("communication_agent")
         worker_prompt = (
-            f'Session ID: {session_id}\nCustomer ID: {customer_id}\n'
-            f'Original customer request: {original_request}\n'
-            'Read the full WorkflowState and compose the final customer-facing response. '
-            'This is the final operation for this request.'
+            f"Session ID: {session_id}\nCustomer ID: {customer_id}\n"
+            f"Original customer request: {original_request}\n"
+            "Read the full WorkflowState and compose the final customer-facing response. "
+            "This is the final operation for this request."
         )
         worker_result = communication_agent(worker_prompt)
         result_text = str(worker_result)
         _update_workflow_state(
-            session_id, {'communication_agent': result_text}, expected_version=old_version
+            session_id,
+            {"communication_agent": result_text},
+            expected_version=old_version,
         )
-        trace.step_done('communication_agent', old_version)
+        trace.step_done("communication_agent", old_version)
         return result_text
 
     # TODO: Implement initialize_session
@@ -1110,24 +1112,30 @@ def build_orchestrator_agent(
         """
         existing = _read_workflow_state(session_id)
         if existing:
-            if existing.get('customer_id') != customer_id:
-                raise ValueError('This session ID is already associated with another customer.')
+            if existing.get("customer_id") != customer_id:
+                raise ValueError(
+                    "This session ID is already associated with another customer."
+                )
             return (
-                f'WorkflowState already initialized for session {session_id}; '
+                f"WorkflowState already initialized for session {session_id}; "
                 f'current version is {existing.get("version", 0)}.'
             )
         try:
             created = _create_workflow_state(session_id, customer_id)
         except ClientError as exc:
-            code = exc.response.get('Error', {}).get('Code')
-            if code != 'ConditionalCheckFailedException':
+            code = exc.response.get("Error", {}).get("Code")
+            if code != "ConditionalCheckFailedException":
                 raise
             # Another invocation created the same session between the read and write.
             created = _read_workflow_state(session_id)
             if not created:
-                raise RuntimeError('WorkflowState creation conflicted but no record was found.') from exc
-            if created.get('customer_id') != customer_id:
-                raise ValueError('This session ID is already associated with another customer.')
+                raise RuntimeError(
+                    "WorkflowState creation conflicted but no record was found."
+                ) from exc
+            if created.get("customer_id") != customer_id:
+                raise ValueError(
+                    "This session ID is already associated with another customer."
+                )
         return f'WorkflowState initialized for session {session_id} at version {created.get("version", 0)}.'
 
     # TODO: Instantiate and return the OrchestratorAgent
@@ -1251,15 +1259,135 @@ def create_guardrail() -> tuple[str, str]:
     for g in existing.get("guardrails", []):
         if g["name"] == config.GUARDRAIL_NAME:
             guardrail_id = g["id"]
-            versions = bedrock_client.list_guardrails(guardrailIdentifier=guardrail_id)
-            guardrail_version = "DRAFT"
-            for v in versions.get("guardrails", []):
-                if v.get("version", "DRAFT") != "DRAFT":
-                    guardrail_version = v["version"]
+            versions = bedrock_client.list_guardrails(guardrailIdentifier=g["arn"])
+            numbered_versions = [
+                v for v in versions.get("guardrails", [])
+                if v.get("version") not in (None, "DRAFT")
+            ]
+
+            if not numbered_versions:
+                raise RuntimeError(
+                    f"Guardrail {guardrail_id} exists but has no "
+                    "numbered version. It needs recovery."
+                )
+
+            guardrail_version = max(
+                numbered_versions,
+                key=lambda v: int(v["version"]),
+            )["version"]
+
             print(
-                f"Guardrail already exists: {guardrail_id} (version: {guardrail_version})"
+                f"Guardrail already exists: {guardrail_id} "
+                f"(version: {guardrail_version})"
             )
             return guardrail_id, guardrail_version
+
+    content_filters = [
+        {
+            "type": category,
+            "inputStrength": strength,
+            "outputStrength": strength,
+            "inputAction": "BLOCK",
+            "outputAction": "BLOCK",
+            "inputEnabled": True,
+            "outputEnabled": True,
+        }
+        for category, strength in {
+            "SEXUAL": "HIGH",
+            "VIOLENCE": "HIGH",
+            "HATE": "HIGH",
+            "INSULTS": "MEDIUM",
+            "MISCONDUCT": "MEDIUM",
+        }.items()
+    ]
+
+    pii_entities_config = [
+        {"type": "CREDIT_DEBIT_CARD_NUMBER", "action": "BLOCK"},
+        {"type": "US_SOCIAL_SECURITY_NUMBER", "action": "BLOCK"},
+        {"type": "EMAIL", "action": "ANONYMIZE"},
+        {"type": "PHONE", "action": "ANONYMIZE"},
+    ]
+
+    topics_config = []
+
+    for configured_topic in config.GUARDRAIL_BLOCKED_TOPICS:
+        normalized_topic = configured_topic.strip().lower()
+
+        if "competitor" in normalized_topic:
+            topic = {
+                "name": "Competitor Products",
+                "definition": (
+                    "Requests seeking recommendations, comparisons, "
+                    "details, or assistance involving competitor products "
+                    "instead of NovaMart products."
+                ),
+                "examples": [
+                    "Recommend a product from a competing retailer.",
+                    "Compare this item with a competitor's product.",
+                ],
+            }
+
+        elif "pricing" in normalized_topic or "negotiat" in normalized_topic:
+            topic = {
+                "name": "Pricing Negotiations",
+                "definition": (
+                    "Requests to haggle, negotiate, bargain, or change "
+                    "a price advertised by NovaMart. This topic does not "
+                    "include arithmetic, totals, or discount calculations "
+                    "using a price and discount rate already specified "
+                    "by the customer."
+                ),
+                "examples": [
+                    "Can you lower the advertised price of this item?",
+                    "I want to negotiate a better price than the listed price.",
+                ],
+            }
+
+        elif "legal" in normalized_topic or "threat" in normalized_topic:
+            topic = {
+                "name": "Legal Threats",
+                "definition": (
+                    "Threats or demands for legal action against NovaMart, "
+                    "including threats to sue or initiate legal proceedings."
+                ),
+                "examples": [
+                    "I will sue NovaMart if this is not resolved.",
+                    "I am taking legal action against your company.",
+                ],
+            }
+
+        else:
+            raise ValueError(f"Unsupported blocked topic: {configured_topic!r}")
+
+        topics_config.append(
+            {
+                **topic,
+                "type": "DENY",
+                "inputAction": "BLOCK",
+                "outputAction": "BLOCK",
+                "inputEnabled": True,
+                "outputEnabled": True,
+            }
+        )
+
+    topic_policy_config = {
+        "topicsConfig": topics_config,
+        "tierConfig": {"tierName": "STANDARD"},
+    }
+
+    cross_region_config = {"guardrailProfileIdentifier": "us.guardrail.v1:0"}
+
+    word_policy_config = {
+        "managedWordListsConfig": [
+            {
+                "type": "PROFANITY",
+                "inputAction": "BLOCK",
+                "outputAction": "BLOCK",
+                "inputEnabled": True,
+                "outputEnabled": True,
+            }
+        ]
+    }
 
     # TODO: Create the guardrail
     # Use bedrock_client.create_guardrail() with:
@@ -1285,7 +1413,98 @@ def create_guardrail() -> tuple[str, str]:
     # bedrock_client.create_guardrail_version(guardrailIdentifier=...)
     # and return (guardrail_id, guardrail_version).
 
-    pass
+    guardrail_response = bedrock_client.create_guardrail(
+        name=config.GUARDRAIL_NAME,
+        description=("NovaMart enterprise safety guardrail for customer support."),
+        contentPolicyConfig={
+            "filtersConfig": content_filters,
+        },
+        sensitiveInformationPolicyConfig={
+            "piiEntitiesConfig": pii_entities_config,
+        },
+        topicPolicyConfig=topic_policy_config,
+        wordPolicyConfig=word_policy_config,
+        crossRegionConfig=cross_region_config,
+        blockedInputMessaging=(
+            "I'm sorry, but I can't help with that request. "
+            "I can assist with NovaMart orders, returns, shipping, "
+            "warranties, and product support."
+        ),
+        blockedOutputsMessaging=(
+            "I'm sorry, but I can't provide that response. "
+            "I can help with NovaMart customer-support requests."
+        ),
+    )
+
+    guardrail_id = guardrail_response["guardrailId"]
+
+    # Wait for the DRAFT guardrail to become READY.
+    print("  Waiting for guardrail creation", end="", flush=True)
+    deadline = time.monotonic() + 300
+
+    while time.monotonic() < deadline:
+        guardrail = bedrock_client.get_guardrail(guardrailIdentifier=guardrail_id)
+        status = guardrail["status"]
+
+        if status == "READY":
+            print(" ready.")
+            break
+
+        if status == "FAILED":
+            raise RuntimeError(
+                f"Guardrail creation failed: " f"{guardrail.get('statusReasons', [])}"
+            )
+
+        print(".", end="", flush=True)
+        time.sleep(5)
+    else:
+        raise TimeoutError(
+            f"Guardrail {guardrail_id} did not become READY within 300 seconds."
+        )
+
+    # Promote the READY DRAFT to a numbered guardrail version.
+    version_response = bedrock_client.create_guardrail_version(
+        guardrailIdentifier=guardrail_id,
+        description="NovaMart production safety policy version.",
+        clientRequestToken=str(uuid.uuid4()),
+    )
+
+    guardrail_version = version_response["version"]
+
+    # Wait for the numbered version to become READY.
+    print(
+        f"  Waiting for guardrail version {guardrail_version}",
+        end="",
+        flush=True,
+    )
+    deadline = time.monotonic() + 300
+
+    while time.monotonic() < deadline:
+        version_details = bedrock_client.get_guardrail(
+            guardrailIdentifier=guardrail_id,
+            guardrailVersion=guardrail_version,
+        )
+        status = version_details["status"]
+
+        if status == "READY":
+            print(" ready.")
+            break
+
+        if status == "FAILED":
+            raise RuntimeError(
+                f"Guardrail version creation failed: "
+                f"{version_details.get('statusReasons', [])}"
+            )
+
+        print(".", end="", flush=True)
+        time.sleep(5)
+    else:
+        raise TimeoutError(
+            f"Guardrail version {guardrail_version} "
+            "did not become READY within 300 seconds."
+        )
+
+    return guardrail_id, guardrail_version
 
 
 def deploy_to_agentcore_runtime(
@@ -1340,11 +1559,32 @@ def deploy_to_agentcore_runtime(
     # 3. Deploy:  agentcore_cli.deploy()        (runs `agentcore deploy -y`)
     # 4. Read the ARN the CLI recorded:
     #      runtime_arn = agentcore_cli.deployed_runtime_arn()
-    runtime_arn = None
+
+    runtime_env = {
+        "AWS_REGION": config.AWS_REGION,
+        "PROJECT_NAME": config.PROJECT_NAME,
+        "RETURNS_KB_ID": config.RETURNS_KB_ID,
+        "SHIPPING_KB_ID": config.SHIPPING_KB_ID,
+        "WARRANTY_KB_ID": config.WARRANTY_KB_ID,
+        "AGENT_LOG_GROUP": config.AGENT_LOG_GROUP,
+        "GUARDRAIL_ID": guardrail_id,
+        "GUARDRAIL_VERSION": guardrail_version,
+    }
+
+    agentcore_cli.configure_runtime(
+        env_vars=runtime_env,
+        network_mode="PUBLIC",
+        protocol="HTTP",
+        execution_role_arn=config.AGENTCORE_ROLE_ARN,
+    )
+
+    agentcore_cli.deploy()
+
+    runtime_arn = agentcore_cli.deployed_runtime_arn()
 
     if not runtime_arn:
-        raise NotImplementedError(
-            "deploy_to_agentcore_runtime: AgentCore CLI deployment not implemented"
+        raise RuntimeError(
+            "AgentCore CLI deployment completed without returning a runtime ARN."
         )
 
     # Wait for the runtime to become READY and return its ARN.
@@ -1387,6 +1627,28 @@ def configure_memory(runtime_arn: str) -> str:
     #   - clientToken (e.g. str(uuid.uuid4())) for idempotency
     # Store the API response in `response`.
     response = None
+
+    if memory is None:
+        response = agentcore_control.create_memory(
+            clientToken=str(uuid.uuid4()),
+            name=memory_name,
+            description=(
+                "NovaMart customer-support conversational memory using session summaries "
+                "for multi-turn context."
+            ),
+            eventExpiryDuration=7,
+            memoryStrategies=[
+                {
+                    "summaryMemoryStrategy": {
+                        "name": "SessionSummary",
+                        "description": "Summarize important context from each customer session.",
+                        "namespaces": ["/summaries/{actorId}/{sessionId}"],
+                    }
+                }
+            ],
+        )
+        memory = response["memory"]
+        print(f"  Memory created: {memory['arn']}  (status: {memory['status']})")
 
     if response is None:
         raise NotImplementedError("configure_memory: create_memory() not implemented")
@@ -1444,8 +1706,14 @@ def configure_observability(runtime_arn: str) -> None:
         },
         "xRayConfig": {"enabled": True, "samplingRate": 1.0},
     }
-    pass
-
+    try:
+        summary = apply_observability_config(runtime_arn, logging_configuration)
+        print(f"  CloudWatch logging enabled: {config.AGENT_LOG_GROUP} (INFO)")
+        print('  X-Ray tracing enabled: 100% sampling rate')
+        if summary:
+            logger.info('Observability configuration summary: %s', summary)
+    except Exception as exc:
+        print(f"  [Note] Observability configuration failed: {exc}")
 
 # ═══════════════════════════════════════════════════════
 #  AGENTCORE GATEWAY DEPLOYMENT
