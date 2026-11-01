@@ -18,9 +18,10 @@ __pycache__/
 # ─────────────────────────────────────────────
 # Environment & Secrets
 # ─────────────────────────────────────────────
-.env
-.env.*
-!.env.example
+# NEEDED FOR THIS PROJECT TO WORK LOCALLY, BUT SHOULD NOT BE COMMITTED
+# .env
+# .env.*
+# !.env.example
 
 # ─────────────────────────────────────────────
 # Claude Code session data

@@ -53,6 +53,22 @@
         {
           "name": "GUARDRAIL_VERSION",
           "value": "1"
+        },
+        {
+          "name": "AGENT_LOG_LEVEL",
+          "value": "INFO"
+        },
+        {
+          "name": "AGENT_LOG_TO_CLOUDWATCH",
+          "value": "true"
+        },
+        {
+          "name": "AGENT_TRACING_ENABLED",
+          "value": "true"
+        },
+        {
+          "name": "AGENT_TRACE_SAMPLING_RATE",
+          "value": "1.0"
         }
       ]
     }
