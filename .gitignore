@@ -2,7 +2,7 @@ Exercise Planning Document.md
 __pycache__/
 
 # Local environment / secrets (never commit)
-.env
+# .env # NEEDED FOR THIS PROJECT TO WORK LOCALLY, BUT SHOULD NOT BE COMMITTED
 
 
 # ─────────────────────────────────────────────
